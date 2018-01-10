@@ -12,21 +12,26 @@ const FILLER: &'static [u8] = &[42; 19];
 
 /// Serialize into a file one row at a time. To serialize an iterator, use the
 /// [`to_file`](fn.to_file.html) function.
-pub struct OutFile<Row: NpyRecord> {
+pub struct OutFile<Row: NpyRecord, W: Write + Seek> {
     shape_pos: usize,
     len: usize,
-    fw: BufWriter<File>,
+    w: W,
     _t: PhantomData<Row>
 }
 
-
-impl<Row: NpyRecord> OutFile<Row> {
+impl<Row: NpyRecord> OutFile<Row, BufWriter<File>> {
     /// Open a file
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let mut fw = BufWriter::new(File::create(path)?);
-        fw.write_all(&[0x93u8])?;
-        fw.write_all(b"NUMPY")?;
-        fw.write_all(&[0x01u8, 0x00])?;
+        Self::new(BufWriter::new(File::create(path)?))
+    }
+}
+
+impl<Row: NpyRecord, W: Write + Seek> OutFile<Row, W> {
+    /// Create a new OutFile from a writer
+    pub fn new(mut writer: W) -> io::Result<Self> {
+        writer.write_all(&[0x93u8])?;
+        writer.write_all(b"NUMPY")?;
+        writer.write_all(&[0x01u8, 0x00])?;
         let mut header: Vec<u8> = vec![];
         header.extend(&b"{'descr': ["[..]);
 
@@ -53,15 +58,15 @@ impl<Row: NpyRecord> OutFile<Row> {
         assert! (len <= ::std::u16::MAX as usize);
         assert_eq!((len + 10) % 16, 0);
 
-        fw.write_u16::<LittleEndian>(len as u16)?;
-        fw.write_all(&header)?;
+        writer.write_u16::<LittleEndian>(len as u16)?;
+        writer.write_all(&header)?;
         // Padding to 8 bytes
-        fw.write_all(&padding)?;
+        writer.write_all(&padding)?;
 
         Ok(OutFile {
             shape_pos: shape_pos,
             len: 0,
-            fw: fw,
+            w: writer,
             _t: PhantomData,
         })
     }
@@ -69,16 +74,16 @@ impl<Row: NpyRecord> OutFile<Row> {
     /// Append a single `NpyRecord` instance to the file
     pub fn push(&mut self, row: &Row) -> io::Result<()> {
         self.len += 1;
-        row.write(&mut self.fw)
+        row.write(&mut self.w)
     }
 
     fn close_(&mut self) -> io::Result<()> {
         // Write the size to the header
-        self.fw.seek(SeekFrom::Start(self.shape_pos as u64))?;
+        self.w.seek(SeekFrom::Start(self.shape_pos as u64))?;
         let length = format!("{}", self.len);
-        self.fw.write_all(length.as_bytes())?;
-        self.fw.write_all(&b",), }"[..])?;
-        self.fw.write_all(&::std::iter::repeat(b' ').take(FILLER.len() - length.len()).collect::<Vec<_>>())?;
+        self.w.write_all(length.as_bytes())?;
+        self.w.write_all(&b",), }"[..])?;
+        self.w.write_all(&::std::iter::repeat(b' ').take(FILLER.len() - length.len()).collect::<Vec<_>>())?;
         Ok(())
     }
 
@@ -90,7 +95,7 @@ impl<Row: NpyRecord> OutFile<Row> {
     }
 }
 
-impl<Row: NpyRecord> Drop for OutFile<Row> {
+impl<Row: NpyRecord, W: Write + Seek> Drop for OutFile<Row, W> {
     fn drop(&mut self) {
         let _ = self.close_(); // Ignore the errors
     }
@@ -107,6 +112,19 @@ pub fn to_file<'a, S, T, P>(filename: P, data: T) -> ::std::io::Result<()> where
         T: IntoIterator<Item=S> {
 
     let mut of = OutFile::open(filename)?;
+    for row in data {
+        of.push(&row)?;
+    }
+    of.close()
+}
+
+/// Serialize an iterator of a struct in NPY format to a buffer
+pub fn write_all<'a, S, T, W>(writer: W, data: T) -> ::std::io::Result<()> where
+        W: Write + Seek,
+        S: NpyRecord + 'a,
+        T: IntoIterator<Item=S> {
+
+    let mut of = OutFile::new(writer)?;
     for row in data {
         of.push(&row)?;
     }

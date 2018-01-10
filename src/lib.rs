@@ -89,7 +89,7 @@ mod out_file;
 pub use serializable::Serializable;
 pub use header::DType;
 pub use npy_data::{NpyRecord, NpyData};
-pub use out_file::{to_file, OutFile};
+pub use out_file::{to_file, write_all, OutFile};
 
 #[cfg(test)]
 mod tests {
